@@ -14,9 +14,9 @@ Zaman çizelgesi (30 fps):
     068-084  ışık süpürmesi  – "zım"
     078-092  yıldız parlaması
     110-118  vakum öncesi nefes
-    116-136  vakum: her şey işaretin boşluğuna emilir
-    136      "çık" – pop flaşı + şok halkası
-    136-150  siyaha kapanış
+    116-133  vakum: her şey işaretin boşluğuna emilir
+    134      KESME: gerilim fragmanı gibi direkt karanlık (trailer vuruşu)
+    134-186  siyah – ses kuyruğu, ardından asıl içerik
 """
 import bpy, bmesh, json, math, sys, os, random, argparse
 from mathutils import Vector
@@ -35,9 +35,9 @@ ap.add_argument('--step', default='1/0')
 args = ap.parse_args(sys.argv[1:] if '--' not in sys.argv else sys.argv[sys.argv.index('--') + 1:])
 
 FPS = 30
-F_END = 165
+F_END = 186
 T = dict(bg_in=(1, 14), mark_in=(8, 40), land=38, word_in=34, tag_in=(50, 72), shine=(68, 84), spark=(78, 92),
-         breathe=(110, 118), vac=(116, 136), pop=136, out=(136, 150))
+         breathe=(110, 118), vac=(116, 136), pop=136, cut=134)
 
 # ------------------------------------------------------------------ reset scene
 bpy.ops.wm.read_factory_settings(use_empty=True)
@@ -339,7 +339,7 @@ nt.links.new(em.outputs[0], out.inputs['Surface'])
 back.data.materials.append(bm_mat)
 back_em = em
 
-# ------------------------------------------------------------------ fx objects: sparkle, pop flash, rings
+# ------------------------------------------------------------------ fx objects: sparkle, suction ring
 def sphere(name, r, loc, mat):
     bpy.ops.mesh.primitive_uv_sphere_add(radius=r, segments=24, ring_count=12, location=loc)
     o = bpy.context.active_object; o.name = name; o.data.materials.append(mat)
@@ -353,18 +353,12 @@ mk_pts = [to_b(p) for seg in geo['mark'][0] for p in seg[1:]]
 tip = max(mk_pts, key=lambda v: v.x)
 spark = sphere('Yildiz', 0.035, (tip.x - 0.18, tip.y, 0.16), spark_mat)
 
-pop_mat, pop_em = emission_mat('PopMat', '#FFFFFF', 0.0)
-pop = sphere('Pop', 0.06, vac_center.location, pop_mat)
 
 ring_in_mat, ring_in_em = emission_mat('HalkaIcMat', '#7FB2FF', 0.0)
 bpy.ops.mesh.primitive_torus_add(major_radius=1.0, minor_radius=0.012, major_segments=128, minor_segments=8,
                                  location=vac_center.location)
 ring_in = bpy.context.active_object; ring_in.name = 'HalkaIc'; ring_in.data.materials.append(ring_in_mat)
-ring_out_mat, ring_out_em = emission_mat('HalkaDisMat', '#CFE0FF', 0.0)
-bpy.ops.mesh.primitive_torus_add(major_radius=1.0, minor_radius=0.012, major_segments=128, minor_segments=8,
-                                 location=vac_center.location)
-ring_out = bpy.context.active_object; ring_out.name = 'HalkaDis'; ring_out.data.materials.append(ring_out_mat)
-for o in (ring_in, ring_out):
+for o in (ring_in,):
     for p in o.data.polygons: p.use_smooth = True
 
 # ------------------------------------------------------------------ lights
@@ -399,12 +393,10 @@ cam_d.dof.use_dof = True; cam_d.dof.focus_object = focus; cam_d.dof.aperture_fst
 cam_d.dof.aperture_blades = 7; cam_d.dof.aperture_rotation = math.radians(12)
 
 # ------------------------------------------------------------------ ANIMATION
-# camera: slow push, then quick push during suction, tiny shake on pop
+# camera: slow push, then quick push during suction
 key(cam, 'location', 1, Vector((0.35, 0.25, 30.5)), 'SINE', 'EASE_OUT')
 key(cam, 'location', T['vac'][0], Vector((-0.1, 0.12, 27.6)), 'QUAD', 'EASE_IN')
 key(cam, 'location', T['pop'], Vector((hole_c.x * 0.35, hole_c.y * 0.35, 25.4)), 'BEZIER')
-for i, (dx, dy) in enumerate([(0.05, -0.04), (-0.04, 0.03), (0.025, -0.02), (0.0, 0.0)]):
-    key(cam, 'location', T['pop'] + 1 + i, Vector((hole_c.x * 0.35 + dx, hole_c.y * 0.35 + dy, 25.4)), 'LINEAR')
 key(cam, 'rotation_euler', 1, Vector((0.0, math.radians(0.6), math.radians(-0.8))), 'SINE', 'EASE_OUT')
 key(cam, 'rotation_euler', T['vac'][0], Vector((0, 0, 0)), 'BEZIER')
 
@@ -415,13 +407,11 @@ key(back_em.inputs['Strength'], 'default_value', T['shine'][0] + 6, 1.35, 'SINE'
 key(back_em.inputs['Strength'], 'default_value', T['shine'][1] + 8, 1.0, 'SINE', 'EASE_IN_OUT', idb=bm_mat.node_tree)
 key(back_em.inputs['Strength'], 'default_value', T['vac'][0], 1.0, 'QUAD', 'EASE_IN', idb=bm_mat.node_tree)
 key(back_em.inputs['Strength'], 'default_value', T['pop'], 0.55, 'BEZIER', idb=bm_mat.node_tree)
-key(back_em.inputs['Strength'], 'default_value', T['pop'] + 2, 1.6, 'EXPO', 'EASE_OUT', idb=bm_mat.node_tree)
-key(back_em.inputs['Strength'], 'default_value', T['out'][1], 0.0, 'CONSTANT', idb=bm_mat.node_tree)
 
 # dust: gentle drift + fade in
 dust.rotation_euler = (0, 0, 0)
 key(dust, 'location', 1, Vector((0.6, -0.2, 0)), 'LINEAR')
-key(dust, 'location', F_END, Vector((-0.8, 0.35, 1.5)), 'LINEAR')
+key(dust, 'location', 165, Vector((-0.8, 0.35, 1.5)), 'LINEAR')
 key(dust_em.inputs['Strength'], 'default_value', 1, 0.0, 'SINE', 'EASE_OUT', idb=dust_mat.node_tree)
 key(dust_em.inputs['Strength'], 'default_value', 18, 5.0, 'BEZIER', idb=dust_mat.node_tree)
 key(dust_em.inputs['Strength'], 'default_value', T['vac'][1], 5.0, 'BEZIER', idb=dust_mat.node_tree)
@@ -507,10 +497,14 @@ key(pn, 'default_value', 1, 0.0, 'CONSTANT', idb=vac)
 key(pn, 'default_value', v0, 0.0, 'QUAD', 'EASE_IN', idb=vac)
 key(pn, 'default_value', v1 - 1, 1.0, 'CONSTANT', idb=vac)
 
-# all logo parts disappear once fully collapsed
-for ob in [mark] + letters + tags + [dust]:
+# HARD CUT TO BLACK (thriller-trailer style): everything disappears on one frame
+CUT = T['cut']
+for ob in [mark] + letters + tags + [dust, ring_in, spark, back]:
     key(ob, 'hide_render', 1, False, 'CONSTANT')
-    key(ob, 'hide_render', v1, True, 'CONSTANT')
+    key(ob, 'hide_render', CUT, True, 'CONSTANT')
+wbg = world.node_tree.nodes['Background'].inputs['Strength']
+key(wbg, 'default_value', 1, 1.0, 'CONSTANT', idb=world.node_tree)
+key(wbg, 'default_value', CUT, 0.0, 'CONSTANT', idb=world.node_tree)
 
 # inward ring (suction cue)
 key(ring_in, 'scale', 1, Vector((6.5, 6.5, 1)), 'CONSTANT')
@@ -520,21 +514,6 @@ key(ring_in_em.inputs['Strength'], 'default_value', 1, 0.0, 'CONSTANT', idb=ring
 key(ring_in_em.inputs['Strength'], 'default_value', v0 - 4, 0.0, 'SINE', 'EASE_IN')
 key(ring_in_em.inputs['Strength'], 'default_value', v1 - 2, 10.0, 'CONSTANT', idb=ring_in_mat.node_tree)
 key(ring_in_em.inputs['Strength'], 'default_value', v1, 0.0, 'CONSTANT', idb=ring_in_mat.node_tree)
-
-# pop flash + outward shockwave ("çık")
-P0 = T['pop']
-key(pop, 'scale', 1, Vector((0, 0, 0)), 'CONSTANT')
-key(pop, 'scale', P0 - 1, Vector((0.4, 0.4, 0.4)), 'EXPO', 'EASE_OUT')
-key(pop, 'scale', P0 + 1, Vector((1.6, 1.6, 1.6)), 'EXPO', 'EASE_IN')
-key(pop, 'scale', P0 + 7, Vector((0, 0, 0)), 'CONSTANT')
-key(pop_em.inputs['Strength'], 'default_value', 1, 0.0, 'CONSTANT', idb=pop_mat.node_tree)
-key(pop_em.inputs['Strength'], 'default_value', P0 - 1, 260.0, 'CONSTANT', idb=pop_mat.node_tree)
-key(ring_out, 'scale', 1, Vector((0.01, 0.01, 1)), 'CONSTANT')
-key(ring_out, 'scale', P0, Vector((0.05, 0.05, 1)), 'EXPO', 'EASE_OUT')
-key(ring_out, 'scale', P0 + 12, Vector((7, 7, 2)), 'CONSTANT')
-key(ring_out_em.inputs['Strength'], 'default_value', 1, 0.0, 'CONSTANT', idb=ring_out_mat.node_tree)
-key(ring_out_em.inputs['Strength'], 'default_value', P0, 16.0, 'QUAD', 'EASE_OUT', idb=ring_out_mat.node_tree)
-key(ring_out_em.inputs['Strength'], 'default_value', P0 + 12, 0.0, 'CONSTANT', idb=ring_out_mat.node_tree)
 
 # ------------------------------------------------------------------ compositor: bloom + star streaks + vignette-free grade
 comp = bpy.data.node_groups.new('Kompozit', 'CompositorNodeTree')

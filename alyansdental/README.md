@@ -27,18 +27,19 @@
 
 ## Intro videosu (`video/`)
 
-`alyansdental-intro.mp4`: 1920×1080, 30 fps, 5,5 sn, H.264 + AAC stereo ses.
+`alyansdental-intro.mp4`: 1920×1080, 30 fps, 6,2 sn, H.264 + AAC stereo ses. Gerilim filmi fragmanı havasında, sert bir siyah kesmeyle bitiyor.
 
 | Süre | Olay |
 | --- | --- |
-| 0,0 – 1,2 sn | Karanlık sahne açılır, işaret derinlikten dönerek uçar ve iner (whoosh + darbe sesi) |
+| 0,0 – 1,2 sn | Karanlık gerilim dronu. İşaret derinlikten dönerek gelir: önce **"ta"** (0,83 sn), inerken derin **"DUM"** (1,23 sn) ve ardından açılan akor |
 | 1,1 – 2,4 sn | "alyansdental" harfleri sırayla döner, alt yazı ortadan açılır |
-| 2,2 – 2,8 sn | **"Zım"**: logonun üzerinden ışık süpürülür ve uçta yıldız parlar |
-| 3,6 – 4,5 sn | **Vakum**: logo, yazılar ve toz parçacıkları işaretin boşluğuna girdap gibi emilir |
-| 4,5 sn | **"Çık"**: pop flaşı ve şok halkası |
-| 5,0 – 5,5 sn | Siyah ekran. Asıl içeriğinizi buradan sonra kesmeden ekleyebilirsiniz |
+| 2,2 – 2,8 sn | **"Zım"**: logonun üzerinden ışık süpürülür, metalik parlama sesi |
+| 2,9 – 3,3 sn | Kalp atışı (gerilim) |
+| 3,6 – 4,4 sn | **Vakum**: logo, yazılar ve toz parçacıkları işaretin boşluğuna girdap gibi emilir, yükselen emiş sesi |
+| 4,43 sn | **Kesme**: emiş bir an susar, ekran direkt kararır ve trailer vuruşu ("braam" + sub düşüşü) gelir |
+| 4,43 – 6,2 sn | Siyah ekranda vuruşun kuyruğu sönümlenir. Asıl içeriğinizi buradan sonra ekleyebilirsiniz |
 
-Ses dosyası ayrıca `ses/alyansdental-intro-sfx.wav` olarak da var (48 kHz, yaklaşık −16 LUFS).
+Ses dosyası ayrıca `ses/alyansdental-intro-sfx.wav` olarak da var (48 kHz, yaklaşık −14 LUFS). "Ta-dum" Netflix tarzında ama tamamen özgün bir sentez; Netflix'in sesinin kopyası değildir.
 
 ## Blender projesi (`blender/`)
 
@@ -46,6 +47,7 @@ Ses dosyası ayrıca `ses/alyansdental-intro-sfx.wav` olarak da var (48 kHz, yak
 
 - **Vakum:** `Vakum` adlı geometry nodes grubundaki `Progress` (emiş) ve `Breath` (öncesindeki nefes) değerleri anahtar karelidir. Emişin hedef noktası `VakumMerkezi` adlı boş nesnedir.
 - **Parlama:** `ShineSweep` shader grubundaki `Sweep` (ışık bandının konumu) ve `Intensity` (parlaklık) değerleri.
+- **Kesme:** 134. karede tüm nesneler `hide_render` ile kapanır ve dünya ışığı 0'a iner. Kesme anını değiştirmek için `scene.py` içindeki `cut` değerini değiştirin.
 - **Glow ve yıldız:** Kompozitördeki iki *Glare* düğümü (Bloom + Streaks).
 - Render çıktısı `//render/` klasörüne yazılır. Varsayılan 64 örnek; daha hızlı bir önizleme için düşürebilirsiniz.
 

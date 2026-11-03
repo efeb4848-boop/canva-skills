@@ -1,6 +1,17 @@
-"""Alyans Dental intro – ses tasarımı (48 kHz stereo, tamamen sentez).
+"""Alyans Dental intro – ses tasarımı (48 kHz stereo, tamamen sentez, telifsiz).
+
 Kullanım: python sfx.py out.wav
-Zamanlama, scene.py içindeki kare zaman çizelgesiyle eşleşir (30 fps)."""
+
+Yapı (30 fps kare zaman çizelgesiyle eşleşir):
+  0.00 s   karanlık gerilim dronu + ters reverb yükselişi
+  0.83 s   "ta"   – yumuşak ön vuruş (işaret yaklaşırken)
+  1.23 s   "DUM"  – derin, rezonanslı ana vuruş + açılan akor (işaret iner)
+  2.37 s   "zım"  – metalik parlama (ışık süpürmesi)
+  2.95 s   kalp atışı – gerilim
+  3.57 s   vakum emişi – yükselen gerilim
+  4.43 s   KESME: ekran direkt kararır – trailer "braam" vuruşu, uzun kuyruk
+  6.20 s   son
+"""
 import sys
 import numpy as np
 from scipy import signal
@@ -8,7 +19,9 @@ from scipy.io import wavfile
 
 SR = 48000
 FPS = 30
-DUR = 165 / FPS
+END_FRAME = 186
+CUT_FRAME = 134          # first black frame
+DUR = END_FRAME / FPS
 N = int(DUR * SR)
 rng = np.random.default_rng(11)
 
@@ -18,18 +31,11 @@ def fr(f):
     return (f - 1) / FPS
 
 
-def t_axis(n):
+def tax(n):
     return np.arange(n) / SR
 
 
-def env_adsr(n, a, d_tau, hold=0.0):
-    t = t_axis(n)
-    e = np.where(t < a, t / max(a, 1e-6), np.exp(-(t - a - hold).clip(0) / d_tau))
-    return e
-
-
 def place(bus, x, t0, gain=1.0, pan=0.0):
-    """mix mono or stereo x into stereo bus at t0 seconds; pan -1..1 (const power)"""
     i0 = int(round(t0 * SR))
     if x.ndim == 1:
         if np.isscalar(pan):
@@ -41,17 +47,12 @@ def place(bus, x, t0, gain=1.0, pan=0.0):
         bus[i0:i1] += gain * x[:i1 - i0]
 
 
-def bandpass_sweep(noise, f_start, f_end, q=2.0, shape='exp'):
-    """time-varying band-pass via state-variable filter"""
+def svf_bp(noise, fc_curve, q=2.0):
     n = len(noise)
-    if shape == 'exp':
-        fc = f_start * (f_end / f_start) ** np.linspace(0, 1, n)
-    else:
-        fc = shape(np.linspace(0, 1, n))
     out = np.zeros(n)
     low = band = 0.0
     damp = 1.0 / q
-    f = 2 * np.sin(np.pi * np.minimum(fc, SR / 6) / SR)
+    f = 2 * np.sin(np.pi * np.minimum(fc_curve, SR / 6) / SR)
     for i in range(n):
         high = noise[i] - low - damp * band
         band += f[i] * high
@@ -70,169 +71,202 @@ def hp(x, fc, order=2):
     return signal.lfilter(b, a, x, axis=0)
 
 
-def sine_sweep(n, f0, f1, curve='exp'):
-    if curve == 'exp':
-        f = f0 * (f1 / f0) ** np.linspace(0, 1, n)
-    else:
-        f = np.linspace(f0, f1, n)
-    return np.sin(2 * np.pi * np.cumsum(f) / SR), f
+def tv_lowpass(x, fc_curve):
+    """time-varying one-pole x2 low-pass"""
+    y1 = y2 = 0.0
+    out = np.zeros(len(x))
+    a = 1 - np.exp(-2 * np.pi * np.minimum(fc_curve, SR / 3) / SR)
+    for i in range(len(x)):
+        y1 += a[i] * (x[i] - y1)
+        y2 += a[i] * (y1 - y2)
+        out[i] = y2
+    return out
 
 
-def reverb_ir(seconds=1.8, decay=0.55, predelay=0.012):
+def osc_sine(freq_curve):
+    return np.sin(2 * np.pi * np.cumsum(freq_curve) / SR)
+
+
+def osc_saw(freq_curve, phase=0.0):
+    ph = (np.cumsum(freq_curve) / SR + phase) % 1.0
+    return 2 * ph - 1
+
+
+def reverb_ir(seconds, decay, predelay=0.015, bright=6500):
     n = int(seconds * SR)
-    t = t_axis(n)
+    t = tax(n)
     ir = rng.standard_normal((n, 2)) * np.exp(-t / decay)[:, None]
-    ir = lp(ir, 7000)
-    # diffuse, slightly darker tail
-    ir[:, 0] *= np.exp(-t / (decay * 1.05)) / np.exp(-t / decay)
-    pd = int(predelay * SR)
-    ir = np.concatenate([np.zeros((pd, 2)), ir])
+    ir = lp(ir, bright)
+    ir = np.concatenate([np.zeros((int(predelay * SR), 2)), ir])
     return ir / np.sqrt(np.sum(ir ** 2) / 2)
 
 
 dry = np.zeros((N, 2))
-send = np.zeros((N, 2))      # reverb send
+hall = np.zeros((N, 2))      # medium reverb send
+cave = np.zeros((N, 2))      # long dark reverb send (big hits)
 
-# ---------------------------------------------------------------- 1. atmosphere riser (0 -> landing)
-land = fr(38)
-n = int((land + 0.02) * SR)
-t = t_axis(n)
-nz = rng.standard_normal(n)
-riser = bandpass_sweep(nz, 180, 5200, q=1.4)
-riser *= (t / t[-1]) ** 2.6
-drone = (np.sin(2 * np.pi * 55 * t) + 0.5 * np.sin(2 * np.pi * 82.4 * t) + 0.25 * np.sin(2 * np.pi * 110 * t))
-drone *= np.minimum(t / 0.5, 1) * 0.5 * (0.6 + 0.4 * t / t[-1])
-place(dry, riser * 0.22, 0.0, pan=np.linspace(-0.3, 0.2, n))
-place(send, riser * 0.25, 0.0)
-place(dry, drone * 0.10, 0.0)
+T_TA, T_DUM = fr(26), fr(38)
+T_ZIM = fr(72)
+T_CUT = fr(CUT_FRAME)
 
-# ---------------------------------------------------------------- 2. whoosh – mark flies in from upper-left
-w0, w1 = fr(8), fr(37)
-n = int((w1 - w0 + 0.25) * SR)
+# ---------------------------------------------------------------- 1. tension drone + reverse swell into the logo hit
+n = int((T_DUM + 0.05) * SR)
+t = tax(n)
+drone = (np.sin(2 * np.pi * 41.2 * t) + 0.45 * np.sin(2 * np.pi * 61.7 * t + 1)
+         + 0.2 * osc_saw(np.full(n, 82.4)) * 0.5)
+drone = lp(drone, 400) * np.minimum(t / 0.6, 1) * 0.55
+swell = svf_bp(rng.standard_normal(n), 220 * (4800 / 220) ** (t / t[-1]), q=1.3)
+swell *= (t / t[-1]) ** 3.2
+place(dry, drone * 0.22, 0.0)
+place(dry, swell * 0.20, 0.0, pan=np.linspace(-0.35, 0.0, n))
+place(hall, swell * 0.25, 0.0)
+# suck-out: tiny gap right before "ta"
+# (handled implicitly: swell peaks at DUM, ta sits inside it)
+
+# ---------------------------------------------------------------- 2. whoosh – mark flies in
+w0, w1 = fr(8), fr(36)
+n = int((w1 - w0 + 0.2) * SR)
 u = np.linspace(0, 1, n)
-nz = rng.standard_normal(n)
-fc = lambda s: 350 + 2600 * np.sin(np.pi * np.clip(s * 1.05, 0, 1)) ** 2
-wh = bandpass_sweep(nz, 0, 0, q=1.8, shape=fc)
-whenv = np.exp(-((u - 0.78) / 0.24) ** 2)
-wh *= whenv
-place(dry, wh * 0.55, w0, pan=np.linspace(-0.85, 0.05, n))
-place(send, wh * 0.35, w0)
+fc = 300 + 2200 * np.sin(np.pi * np.clip(u * 1.05, 0, 1)) ** 2
+wh = svf_bp(rng.standard_normal(n), fc, q=1.8) * np.exp(-((u - 0.62) / 0.26) ** 2)
+place(dry, wh * 0.42, w0, pan=np.linspace(-0.85, 0.05, n))
+place(hall, wh * 0.25, w0)
 
-# ---------------------------------------------------------------- 3. landing impact
+
+# ---------------------------------------------------------------- 3. "ta–DUM" sonic logo (original)
+def tuned_hit(f0, length, decays, amps, drop=0.05, click=0.2, thump=0.7):
+    n_ = int(length * SR)
+    t_ = tax(n_)
+    glide = 1 + drop * np.exp(-t_ / 0.06)
+    body = np.zeros(n_)
+    for k, (dk, ak) in enumerate(zip(decays, amps)):
+        body += ak * osc_sine(f0 * (k + 1) * glide) * np.exp(-t_ / dk)
+    body *= np.minimum(t_ / 0.003, 1)
+    th = lp(rng.standard_normal(n_), 180, 4) * np.exp(-t_ / 0.05) * thump
+    ck = hp(rng.standard_normal(n_), 1800, 2) * np.exp(-t_ / 0.006) * click
+    return body + th + ck
+
+
+ta = tuned_hit(58.3, 1.2, [0.22, 0.14, 0.09], [1.0, 0.55, 0.3], click=0.25, thump=0.6)
+dum = tuned_hit(49.0, 3.2, [1.1, 0.7, 0.45, 0.3], [1.0, 0.65, 0.4, 0.2], drop=0.07, click=0.3, thump=1.0)
+place(dry, ta * 0.50, T_TA)
+place(hall, ta * 0.30, T_TA)
+place(dry, dum * 0.95, T_DUM)
+place(cave, dum * 0.35, T_DUM)
+
+# bloom: open chord that swells after DUM (G1 D2 G2 D3 B3), wide stereo, filter opens then closes
 n = int(2.6 * SR)
-t = t_axis(n)
-boom, _ = sine_sweep(n, 72, 36)
-boom *= np.exp(-t / 0.42) * np.minimum(t / 0.004, 1)
-thud = lp(rng.standard_normal(n), 260, 4) * np.exp(-t / 0.06)
-click = hp(rng.standard_normal(n), 3000) * np.exp(-t / 0.004)
-imp = 0.9 * boom + 0.9 * thud + 0.25 * click
-place(dry, imp * 0.85, land)
-place(send, imp * 0.35, land)
+t = tax(n)
+chord = np.zeros((n, 2))
+for i_, (f, a) in enumerate([(49.0, 1.0), (73.4, 0.8), (98.0, 0.7), (146.8, 0.5), (246.9, 0.28)]):
+    for ch, det in enumerate((-0.006, 0.006)):
+        chord[:, ch] += a * osc_saw(np.full(n, f * (1 + det * (1 + i_ * 0.3))), phase=rng.random())
+cut_curve = 150 + 1900 * np.sin(np.pi * np.clip(t / 1.6, 0, 1)) ** 1.5 * np.exp(-t / 1.4)
+for ch in range(2):
+    chord[:, ch] = tv_lowpass(chord[:, ch], cut_curve)
+env = (1 - np.exp(-t / 0.18)) * np.exp(-t / 0.9)
+chord *= env[:, None] * 0.55
+place(dry, chord * 0.55, T_DUM + 0.02)
+place(hall, chord * 0.35, T_DUM + 0.02)
 
-# ---------------------------------------------------------------- 4. letter ticks (soft, panned L->R)
+# ---------------------------------------------------------------- 4. letter ticks (very soft)
 for i in range(12):
     t0 = fr(34 + i * 1.6 + 3)
-    n = int(0.06 * SR)
-    t = t_axis(n)
-    tick = bandpass_sweep(rng.standard_normal(n), 5200, 3800, q=3) * np.exp(-t / 0.012)
-    place(dry, tick * 0.16, t0, pan=-0.6 + 1.2 * i / 11)
-    place(send, tick * 0.12, t0)
+    n = int(0.05 * SR)
+    t = tax(n)
+    tick = svf_bp(rng.standard_normal(n), np.full(n, 4600.0), q=3) * np.exp(-t / 0.01)
+    place(dry, tick * 0.08, t0, pan=-0.6 + 1.2 * i / 11)
+    place(hall, tick * 0.08, t0)
 
-# ---------------------------------------------------------------- 5. tagline shimmer
-s0 = fr(50)
-n = int(0.9 * SR)
-t = t_axis(n)
-sh = np.zeros(n)
-for k, f in enumerate([2637, 3136, 3951, 4699]):
-    sh += np.sin(2 * np.pi * f * t + k) * (0.5 + 0.5 * np.sin(2 * np.pi * (5 + k) * t))
-sh *= np.sin(np.pi * np.clip(t / 0.9, 0, 1)) ** 2 * 0.25
-air = hp(rng.standard_normal(n), 6000) * np.sin(np.pi * t / 0.9) ** 2 * 0.25
-place(dry, (sh + air) * 0.18, s0, pan=0.0)
-place(send, (sh + air) * 0.25, s0)
-
-# ---------------------------------------------------------------- 6. "ZIM" – light sweep (metallic shing + air sweep L->R)
+# ---------------------------------------------------------------- 5. "zım" – metallic shine (reverse swell -> shing), air sweep L->R
 z0, z1 = fr(68), fr(84)
 n = int((z1 - z0) * SR)
 u = np.linspace(0, 1, n)
-air = bandpass_sweep(rng.standard_normal(n), 2500, 11000, q=1.2) * np.sin(np.pi * u) ** 1.5
-place(dry, air * 0.35, z0, pan=np.linspace(-0.9, 0.9, n))
-place(send, air * 0.3, z0)
-
-zt = fr(72)     # the "zım" hit lands while the band crosses the mark
+air = svf_bp(rng.standard_normal(n), 2500 * (10000 / 2500) ** u, q=1.2) * np.sin(np.pi * u) ** 1.5
+place(dry, air * 0.26, z0, pan=np.linspace(-0.9, 0.9, n))
+place(hall, air * 0.22, z0)
+n = int(0.35 * SR)
+t = tax(n)
+rev = hp(rng.standard_normal(n), 3000) * (t / t[-1]) ** 3
+place(dry, rev * 0.12, T_ZIM - 0.35)
+place(hall, rev * 0.2, T_ZIM - 0.35)
 n = int(3.0 * SR)
-t = t_axis(n)
+t = tax(n)
 zim = np.zeros(n)
-base = 1318.5
 for ratio, amp, tau in [(1.0, 1.0, 0.5), (2.005, 0.6, 0.42), (2.76, 0.45, 0.36), (3.99, 0.35, 0.3),
                         (5.41, 0.22, 0.22), (6.8, 0.14, 0.16)]:
     glide = 1 + 0.03 * (1 - np.exp(-t / 0.08))
-    ph = 2 * np.pi * np.cumsum(base * ratio * glide) / SR
-    zim += amp * np.sin(ph) * np.exp(-t / tau)
-zim *= np.minimum(t / 0.006, 1)
-trem = 1 + 0.15 * np.sin(2 * np.pi * 7 * t)
-zim *= trem
-zl = zim * (1 + 0.08 * np.sin(2 * np.pi * 0.9 * t))
-zr = np.roll(zim, int(0.0007 * SR)) * (1 - 0.08 * np.sin(2 * np.pi * 0.9 * t))
-zst = np.stack([zl, zr], 1)
-place(dry, zst * 0.30, zt)
-place(send, zst * 0.30, zt)
+    zim += amp * osc_sine(1046.5 * ratio * glide) * np.exp(-t / tau)
+zim *= np.minimum(t / 0.006, 1) * (1 + 0.12 * np.sin(2 * np.pi * 7 * t))
+zst = np.stack([zim * (1 + 0.08 * np.sin(2 * np.pi * 0.9 * t)),
+                np.roll(zim, int(0.0007 * SR)) * (1 - 0.08 * np.sin(2 * np.pi * 0.9 * t))], 1)
+place(dry, zst * 0.24, T_ZIM)
+place(hall, zst * 0.28, T_ZIM)
+sub = osc_sine(np.full(n, 41.2)) * np.exp(-t / 0.5) * np.minimum(t / 0.01, 1)
+place(dry, sub * 0.22, T_ZIM)
 
-# sparkle "ting" when the star pops on the tip
-st = fr(80)
-n = int(1.4 * SR)
-t = t_axis(n)
-ting = (np.sin(2 * np.pi * 4186 * t) * np.exp(-t / 0.35) + 0.6 * np.sin(2 * np.pi * 6272 * t) * np.exp(-t / 0.22)
-        + 0.3 * np.sin(2 * np.pi * 8372 * t) * np.exp(-t / 0.12)) * np.minimum(t / 0.002, 1)
-place(dry, ting * 0.16, st, pan=0.45)
-place(send, ting * 0.22, st)
+# ---------------------------------------------------------------- 6. heartbeat (tension in the hold)
+for t0 in (2.98, 3.22):
+    n = int(0.5 * SR)
+    t = tax(n)
+    hb = osc_sine(52 * (1 + 0.25 * np.exp(-t / 0.03))) * np.exp(-t / 0.09) * np.minimum(t / 0.004, 1)
+    hb += lp(rng.standard_normal(n), 120, 4) * np.exp(-t / 0.03) * 0.6
+    place(dry, hb * (0.42 if t0 < 3.1 else 0.32), t0)
 
-# ---------------------------------------------------------------- 7. vacuum suction (breath -> suck, swirling pan)
-v0, v1 = fr(110), fr(136)
+# ---------------------------------------------------------------- 7. vacuum riser (stops just before the cut)
+v0 = fr(108)
+v1 = T_CUT - 0.045                      # suck-out gap before the hit
 n = int((v1 - v0) * SR)
 u = np.linspace(0, 1, n)
-t = t_axis(n)
-amp = u ** 2.4
-suck = bandpass_sweep(rng.standard_normal(n), 160, 4800, q=2.2) * amp
-tone, fsw = sine_sweep(n, 70, 980)
-saw = signal.sawtooth(2 * np.pi * np.cumsum(fsw * 0.5) / SR)
-tone = 0.6 * tone + 0.4 * lp(saw, 2500)
+amp = u ** 2.2
+suck = svf_bp(rng.standard_normal(n), 160 * (5200 / 160) ** u, q=2.2) * amp
+tone_f = 55 * (880 / 55) ** (u ** 1.3)
+tone = 0.6 * osc_sine(tone_f) + 0.4 * lp(osc_saw(tone_f * 0.5), 2500)
 tone *= amp ** 1.3
-swirl_rate = 0.8 + 9 * u ** 2
-pan = 0.7 * np.sin(2 * np.pi * np.cumsum(swirl_rate) / SR) * (1 - u ** 3)
-place(dry, suck * 0.95, v0, pan=pan)
-place(dry, tone * 0.22, v0, pan=-pan * 0.5)
-place(send, suck * 0.4, v0)
-# breath (tiny inhale before the suck)
-n = int(0.32 * SR)
-t = t_axis(n)
-inh = bandpass_sweep(rng.standard_normal(n), 700, 1600, q=1.5) * np.sin(np.pi * t / t[-1]) ** 2
-place(dry, inh * 0.20, fr(108))
+rate = 0.8 + 10 * u ** 2
+pan = 0.7 * np.sin(2 * np.pi * np.cumsum(rate) / SR) * (1 - u ** 3)
+fade = np.ones(n)
+fade[-int(0.006 * SR):] = np.linspace(1, 0, int(0.006 * SR))
+place(dry, suck * fade * 0.85, v0, pan=pan)
+place(dry, tone * fade * 0.24, v0, pan=-pan * 0.5)
+place(hall, suck * fade * 0.25, v0)
 
-# ---------------------------------------------------------------- 8. "ÇIK" – pop / click close
-pt = fr(136)
-n = int(1.2 * SR)
-t = t_axis(n)
-pop_tone, _ = sine_sweep(n, 1500, 260)
-pop_tone *= np.exp(-t / 0.045)
-clk = hp(rng.standard_normal(n), 2500, 4) * np.exp(-t / 0.0025)
-thump, _ = sine_sweep(n, 95, 44)
-thump *= np.exp(-t / 0.16) * np.minimum(t / 0.002, 1)
-snap = bandpass_sweep(rng.standard_normal(n), 3200, 1200, q=2.5) * np.exp(-t / 0.018)
-popx = 0.8 * pop_tone + 0.6 * clk + 1.0 * thump + 0.5 * snap
-place(dry, popx * 0.95, pt - 0.004)
-place(send, popx * 0.55, pt)
+# ---------------------------------------------------------------- 8. CUT TO BLACK – trailer "braam" hit
+n = int(2.2 * SR)
+t = tax(n)
+subdrop = osc_sine(30 + 34 * np.exp(-t / 0.35)) * np.exp(-t / 1.1) * np.minimum(t / 0.002, 1)
+braam = np.zeros((n, 2))
+for i_, (f, a) in enumerate([(55.0, 1.0), (82.4, 0.7), (110.0, 0.8), (130.8, 0.45), (164.8, 0.3)]):
+    for ch, det in enumerate((-0.007, 0.007)):
+        braam[:, ch] += a * osc_saw(np.full(n, f * (1 + det)), phase=rng.random())
+bc = 180 + 2400 * np.exp(-t / 0.35)
+for ch in range(2):
+    braam[:, ch] = tv_lowpass(braam[:, ch], bc)
+braam = np.tanh(braam * 1.8) * (np.exp(-t / 0.9) * np.minimum(t / 0.012, 1))[:, None]
+metal = np.zeros(n)
+for f, a, d in [(412, 1.0, 0.5), (1131, 0.6, 0.35), (1873, 0.4, 0.25), (2711, 0.25, 0.18)]:
+    metal += a * osc_sine(np.full(n, f)) * np.exp(-t / d)
+metal += svf_bp(rng.standard_normal(n), np.full(n, 3200.0), q=1.0) * np.exp(-t / 0.05) * 1.5
+metal *= np.minimum(t / 0.001, 1)
+crack = hp(rng.standard_normal(n), 900, 2) * np.exp(-t / 0.012)
+place(dry, subdrop * 1.0, T_CUT)
+place(dry, braam * 0.42, T_CUT)
+place(dry, metal * 0.16, T_CUT)
+place(dry, crack * 0.35, T_CUT)
+place(cave, braam * 0.30, T_CUT)
+place(cave, (metal * 0.15 + crack * 0.2), T_CUT)
 
 # ---------------------------------------------------------------- mix
-ir = reverb_ir(1.9, 0.5)
-wet = np.stack([signal.fftconvolve(send[:, c], ir[:, c])[:N] for c in range(2)], 1)
-mix = dry + 0.38 * wet
-mix = hp(mix, 28, 2)
-# gentle bus compression-ish soft clip and normalisation
+ir_h = reverb_ir(1.8, 0.45)
+ir_c = reverb_ir(4.0, 1.1, predelay=0.03, bright=3500)
+wet_h = np.stack([signal.fftconvolve(hall[:, c], ir_h[:, c])[:N] for c in range(2)], 1)
+wet_c = np.stack([signal.fftconvolve(cave[:, c], ir_c[:, c])[:N] for c in range(2)], 1)
+mix = dry + 0.32 * wet_h + 0.30 * wet_c
+mix = hp(mix, 24, 2)
 peak = np.max(np.abs(mix))
-mix = mix / peak * 1.25
-mix = np.tanh(mix) / np.tanh(1.25)
-# final fade so the tail ends cleanly on black
-fade_n = int(0.35 * SR)
+mix = mix / peak * 1.35
+mix = np.tanh(mix) / np.tanh(1.35)
+fade_n = int(0.5 * SR)
 mix[-fade_n:] *= np.linspace(1, 0, fade_n)[:, None] ** 2
 mix *= 10 ** (-1.0 / 20)
 wavfile.write(sys.argv[1], SR, (mix * 32767).astype(np.int16))
